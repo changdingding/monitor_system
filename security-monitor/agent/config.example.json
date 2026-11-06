@@ -1,0 +1,6 @@
+{
+  "server_url": "http://YOUR_SERVER_IP:8000",
+  "agent_token": "PASTE_TOKEN_HERE",
+  "poll_interval_seconds": 30,
+  "heartbeat_interval_seconds": 60
+}

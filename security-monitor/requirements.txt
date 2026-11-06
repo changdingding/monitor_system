@@ -1,0 +1,54 @@
+# ============================================
+# Python 依赖包
+# ============================================
+
+# Web 框架
+fastapi==0.162.0
+# 显式锁定，避免随 fastapi 浮动；需兼容 Python 3.10（与 Dockerfile 一致）
+starlette==1.7.0
+uvicorn[standard]==0.54.0
+
+# 数据库
+sqlalchemy==2.0.23
+asyncpg==0.29.0
+alembic==1.13.0
+
+# Redis
+redis==5.0.1
+
+# 定时任务
+apscheduler==3.10.4
+
+# SNMP 采集
+pysnmp==6.2.4
+
+# Windows 日志采集 (仅 Windows 需要)
+pywin32==306; sys_platform == 'win32'
+
+# HTTP 客户端
+httpx==0.28.1
+requests==2.34.2
+paramiko==5.1.0
+
+# 配置管理
+python-dotenv==1.2.4
+pydantic==2.14.2
+pydantic-settings==2.15.0
+
+# 日志
+loguru==0.7.2
+
+# 工具
+python-multipart==0.0.32
+
+# JWT 认证
+PyJWT==2.15.1
+
+# 密码哈希
+bcrypt==4.1.2
+
+# 凭据加密（app/core/crypto.py 直接使用，原先只是 paramiko 的间接依赖）
+cryptography==50.0.2
+
+# AI 日志分析（Claude 官方 SDK；OpenAI 兼容接口直接用 httpx 调用）
+anthropic==2.6.0

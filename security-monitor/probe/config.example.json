@@ -1,0 +1,6 @@
+{
+  "server_url": "http://YOUR_SERVER:8000",
+  "probe_token": "PASTE_TOKEN_HERE",
+  "interval_seconds": 60,
+  "devices": []
+}

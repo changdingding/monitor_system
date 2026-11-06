@@ -1,0 +1,20 @@
+请按下面步骤操作（无需改配置）：
+
+1. 解压本文件夹到任意位置
+2. 双击「安装Agent.bat」
+3. 若弹出「用户账户控制」，点击「是」授权
+4. 在安装向导中依次点击「下一步」→「安装」→「完成」
+
+安装成功后，回到管理端「服务器管理」刷新，应显示 Agent=在线。
+
+若仍显示「未连接」：
+1. 打开 C:\Program Files\SecurityMonitorAgent\config.json
+   确认 server_url 是 cpolar 公网地址，例如：
+   http://xxxx.cpolar.top
+   （不要加 :8000，也不要写 localhost）
+2. 双击同目录「测试连接.bat」，看弹窗结果
+3. 查看同目录 agent.log 最后几行
+
+如需卸载：
+- 打开「任务计划程序」，删除任务 SecurityMonitorAgent
+- 删除目录 C:\Program Files\SecurityMonitorAgent

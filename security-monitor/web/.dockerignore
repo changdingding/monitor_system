@@ -1,0 +1,5 @@
+# 构建时在镜像内重新安装依赖，不能带入宿主机的 node_modules / 构建产物
+node_modules
+dist
+.vite
+*.log
