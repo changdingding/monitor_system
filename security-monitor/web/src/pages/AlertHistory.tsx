@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Table, Tag, Space, Button, Select, Card, message, Modal, Descriptions } from 'antd';
 import { ReloadOutlined, EyeOutlined, CheckOutlined } from '@ant-design/icons';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { alertApi } from '../services/api';
 import type { Alert } from '../types';
 
@@ -10,19 +11,24 @@ export default function AlertHistory() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [levelFilter, setLevelFilter] = useState<string | undefined>();
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  // 仪表盘跳转带过来的筛选：?status=open|new &level= &site_id= &keyword=
+  const [levelFilter, setLevelFilter] = useState<string | undefined>(params.get('level') || undefined);
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(params.get('status') || undefined);
+  const siteId = params.get('site_id') ? Number(params.get('site_id')) : undefined;
+  const keyword = params.get('keyword') || undefined;
   const [detailVisible, setDetailVisible] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
 
   useEffect(() => {
     fetchAlerts();
-  }, [page, pageSize, levelFilter, statusFilter]);
+  }, [page, pageSize, levelFilter, statusFilter, siteId, keyword]);
 
   const fetchAlerts = async () => {
     setLoading(true);
     try {
-      const res = await alertApi.list({ page, size: pageSize, level: levelFilter, status: statusFilter });
+      const res = await alertApi.list({ page, size: pageSize, level: levelFilter, status: statusFilter, site_id: siteId, keyword });
       setAlerts(res.data.items || res.data);
       setTotal(res.data.total || res.data.length);
     } catch (error) {
@@ -123,6 +129,7 @@ export default function AlertHistory() {
               placeholder="告警级别"
               allowClear
               style={{ width: 120 }}
+              value={levelFilter}
               onChange={(v) => { setLevelFilter(v); setPage(1); }}
             >
               <Select.Option value="critical">严重</Select.Option>
@@ -134,13 +141,16 @@ export default function AlertHistory() {
               placeholder="状态"
               allowClear
               style={{ width: 120 }}
+              value={statusFilter}
               onChange={(v) => { setStatusFilter(v); setPage(1); }}
             >
+              <Select.Option value="open">未关闭</Select.Option>
               <Select.Option value="new">待处理</Select.Option>
               <Select.Option value="acknowledged">已确认</Select.Option>
               <Select.Option value="resolved">已解决</Select.Option>
               <Select.Option value="ignored">已忽略</Select.Option>
             </Select>
+            {(siteId || keyword) && <Tag closable onClose={() => navigate('/alerts')}>{keyword ? `来源：${keyword}` : `站点 #${siteId}`}</Tag>}
             <Button icon={<ReloadOutlined />} onClick={fetchAlerts}>刷新</Button>
           </Space>
         }

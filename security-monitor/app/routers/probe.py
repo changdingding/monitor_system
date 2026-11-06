@@ -1,4 +1,9 @@
-"""门店边缘采集器接入：心跳与网络设备上报。"""
+"""
+边缘采集器接入：拉取集中配置、心跳与网络设备上报。
+
+设备清单、团体字、自动发现网段都在总部网页上配置，采集器每轮通过 GET /probe/config 拉取，
+现场只需填写总部地址和站点 Token（安装向导里就能改）。
+"""
 import logging
 from typing import List, Optional
 
@@ -7,14 +12,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.database import db
-from app.core.crypto import token_hash
+from app.core.crypto import decrypt, token_hash
 from app.services.health import check_resource_thresholds, clear_resource_alerts, sync_condition
 from app.services.ingest_time import is_fresh, naive, parse_collected_at
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/probe", tags=["probe"])
 
-_DEVICE_TYPES = {"switch", "router", "firewall", "other"}
+_DEVICE_TYPES = {"switch", "router", "firewall", "ap", "other"}
 
 
 class ProbeHeartbeat(BaseModel):
@@ -33,6 +38,8 @@ class InterfaceIn(BaseModel):
 class DeviceIn(BaseModel):
     name: str
     ip: str
+    discovered: bool = False  # 由采集器网段扫描发现（总部尚未建档）
+    sys_name: Optional[str] = None
     device_type: Optional[str] = "other"
     reachable: bool = False
     snmp_ok: bool = False
@@ -109,7 +116,49 @@ async def _touch_site(site: dict, collected_at: Optional[str]) -> None:
 @router.post("/heartbeat")
 async def probe_heartbeat(body: ProbeHeartbeat, site: dict = Depends(_auth_probe)):
     await _touch_site(site, body.collected_at)
+    await db.execute(
+        "UPDATE sites SET probe_version=COALESCE($1, probe_version), probe_hostname=COALESCE($2, probe_hostname) WHERE id=$3",
+        (body.probe_version or "")[:32] or None, (body.hostname or "")[:255] or None, site["id"],
+    )
     return {"status": "ok", "site_id": site["id"], "site_name": site["name"]}
+
+
+@router.get("/config")
+async def probe_config(site: dict = Depends(_auth_probe)):
+    """下发给采集器的集中配置：设备清单（含团体字）、自动发现网段、采集间隔"""
+    default_community = decrypt(site.get("snmp_community")) or None
+    rows = await db.fetch_all(
+        """
+        SELECT id, name, ip, device_type, snmp_community, snmp_port, vendor
+        FROM network_devices WHERE site_id=$1 ORDER BY ip
+        """,
+        site["id"],
+    )
+    devices = []
+    for row in rows:
+        devices.append({
+            "id": row["id"],
+            "name": row["name"],
+            "ip": row["ip"],
+            "device_type": row["device_type"] or "other",
+            "community": decrypt(row.get("snmp_community")) or default_community or "public",
+            "snmp_port": int(row.get("snmp_port") or 161),
+            "vendor": row.get("vendor") or "auto",
+        })
+    cidrs = [c for c in (site.get("scan_cidrs") or "").split(",") if c.strip()]
+    return {
+        "site_id": site["id"],
+        "site_name": site["name"],
+        "collect_mode": site.get("collect_mode") or "probe",
+        "interval_seconds": int(site.get("probe_interval_seconds") or 60),
+        "devices": devices,
+        "scan": {
+            "enabled": bool(site.get("scan_enabled")) and bool(cidrs),
+            "cidrs": cidrs,
+            "community": default_community or "public",
+            "interval_minutes": 60,
+        },
+    }
 
 
 @router.post("/report")
@@ -124,7 +173,8 @@ async def probe_report(body: ProbeReport, site: dict = Depends(_auth_probe)):
 
 async def _upsert_device(site: dict, device: DeviceIn, report_time: Optional[str] = None) -> bool:
     ip = (device.ip or "").strip()
-    name = (device.name or ip or "未命名设备").strip()[:100]
+    name = (device.sys_name or device.name or ip or "未命名设备").strip()[:100] if device.discovered \
+        else (device.name or ip or "未命名设备").strip()[:100]
     if not ip:
         return False
     device_type = (device.device_type or "other").lower()
@@ -154,8 +204,8 @@ async def _upsert_device(site: dict, device: DeviceIn, report_time: Optional[str
             row = await db.fetch_one(
                 """
                 INSERT INTO network_devices
-                    (name, ip, device_type, snmp_version, status, site_id, cpu, memory, vendor, last_seen)
-                VALUES ($1, $2, $3, 'v2c', $4, $5, $6, $7, $8, $9)
+                    (name, ip, device_type, snmp_version, status, site_id, cpu, memory, vendor, last_seen, source)
+                VALUES ($1, $2, $3, 'v2c', $4, $5, $6, $7, $8, $9, $10)
                 RETURNING id, name, last_seen
                 """,
                 name,
@@ -167,6 +217,7 @@ async def _upsert_device(site: dict, device: DeviceIn, report_time: Optional[str
                 memory,
                 vendor,
                 when,
+                "discovered" if device.discovered else "probe",
             )
         except asyncpg.UniqueViolationError:
             row = await db.fetch_one(

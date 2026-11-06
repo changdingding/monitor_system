@@ -224,7 +224,8 @@ async def scan_offline() -> None:
     probe_online: dict[int, bool] = {}
     for site in sites:
         site_id = site["id"]
-        if (site.get("site_type") or "store") != "store":
+        # 云端站点、总部平台直接轮询的站点没有采集器
+        if (site.get("site_type") or "store") == "cloud" or (site.get("collect_mode") or "probe") == "central":
             probe_online[site_id] = True
             continue
         phase = await _phase("sites", site_id, seconds, ["last_seen"])
@@ -251,7 +252,7 @@ async def scan_offline() -> None:
             host=site.get("city") or "",
             alert_type="probe_offline",
             severity="critical",
-            message=f"门店「{site['name']}」边缘采集器超过 {seconds} 秒无心跳，店内网络设备暂停逐台离线判断",
+            message=f"站点「{site['name']}」边缘采集器超过 {seconds} 秒无心跳，店内网络设备暂停逐台离线判断",
             site_name=site["name"],
         )
 
@@ -311,14 +312,14 @@ async def scan_offline() -> None:
         SELECT d.id, d.name, d.ip, d.site_id, d.status, si.name AS site_name, si.site_type
         FROM network_devices d
         LEFT JOIN sites si ON si.id = d.site_id
-        WHERE d.site_id IS NOT NULL
+        WHERE d.site_id IS NOT NULL AND COALESCE(si.collect_mode, 'probe') <> 'central'
         """
     )
     for device in devices:
         site_id = device.get("site_id")
         site_type = device.get("site_type") or "store"
         # 门店采集器自己断了时，网络设备没有新数据，不能当成每台都坏了
-        if site_type == "store" and not probe_online.get(site_id, False):
+        if site_type != "cloud" and not probe_online.get(site_id, False):
             continue
         phase = await _phase("network_devices", device["id"], seconds, ["last_seen"])
         if phase == "pending":

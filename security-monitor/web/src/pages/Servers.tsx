@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import {
-  Table, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm, Card, Alert, Typography,
+  Table, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm, Card, Alert, Typography, TreeSelect,
 } from 'antd';
+import { useSearchParams } from 'react-router-dom';
+import { siteTreeData } from '../utils/siteTree';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, ApiOutlined,
   CloudSyncOutlined, DownloadOutlined, KeyOutlined,
@@ -34,19 +36,24 @@ export default function Servers() {
   const [downloadingOs, setDownloadingOs] = useState<'windows' | 'linux' | null>(null);
   const [form] = Form.useForm();
   const [sites, setSites] = useState<Site[]>([]);
+  const [params, setParams] = useSearchParams();
+  const siteFilter = params.get('site_id') ? Number(params.get('site_id')) : undefined;
   const osType = Form.useWatch('os_type', form);
 
   const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:8000`;
 
   useEffect(() => {
-    fetchServers();
     siteApi.list().then((res) => setSites(res.data || [])).catch(() => setSites([]));
   }, []);
+
+  useEffect(() => {
+    fetchServers();
+  }, [siteFilter]);
 
   const fetchServers = async () => {
     setLoading(true);
     try {
-      const res = await serverApi.list();
+      const res = await serverApi.list({ site_id: siteFilter });
       setServers(res.data);
     } catch (error) {
       message.error('获取服务器列表失败');
@@ -324,6 +331,8 @@ export default function Servers() {
         title="服务器管理"
         extra={
           <Space>
+            <TreeSelect allowClear treeDefaultExpandAll placeholder="全部站点" style={{ width: 200 }} value={siteFilter}
+              onChange={(v) => setParams(v ? { site_id: String(v) } : {})} treeData={siteTreeData(sites)} />
             <Button icon={<ReloadOutlined />} onClick={fetchServers}>刷新</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>添加服务器</Button>
           </Space>
@@ -355,13 +364,7 @@ export default function Servers() {
       >
         <Form form={form} layout="vertical" onFinish={handleSubmit}>
           <Form.Item name="site_id" label="所属门店 / 云端">
-            <Select allowClear placeholder="未归属">
-              {sites.map((site) => (
-                <Select.Option key={site.id} value={site.id}>
-                  {site.name}{site.site_type === 'cloud' ? '（云端）' : ''}
-                </Select.Option>
-              ))}
-            </Select>
+            <TreeSelect allowClear treeDefaultExpandAll placeholder="未归属" treeData={siteTreeData(sites)} />
           </Form.Item>
           <Form.Item name="name" label="服务器名称" rules={[{ required: true, message: '请输入服务器名称' }]}>
             <Input placeholder="例如：生产服务器-01" />

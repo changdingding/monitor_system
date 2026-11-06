@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm, Card } from 'antd';
+import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm, Card, Radio, TreeSelect, Tooltip, Alert } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, KeyOutlined, UnlockOutlined } from '@ant-design/icons';
-import { userApi } from '../services/api';
-import type { User } from '../types';
+import { siteApi, userApi } from '../services/api';
+import type { Site, User } from '../types';
+import { siteTreeData } from '../utils/siteTree';
 
 export default function Users() {
   const [users, setUsers] = useState<User[]>([]);
@@ -12,9 +13,13 @@ export default function Users() {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [form] = Form.useForm();
   const [passwordForm] = Form.useForm();
+  const [sites, setSites] = useState<Site[]>([]);
+  const role = Form.useWatch('role', form);
+  const dataScope = Form.useWatch('data_scope', form);
 
   useEffect(() => {
     fetchUsers();
+    siteApi.list().then((res) => setSites(res.data || [])).catch(() => setSites([]));
   }, []);
 
   const fetchUsers = async () => {
@@ -32,12 +37,13 @@ export default function Users() {
   const handleAdd = () => {
     setEditingUser(null);
     form.resetFields();
+    form.setFieldsValue({ role: 'viewer', data_scope: 'sites', site_ids: [] });
     setModalVisible(true);
   };
 
   const handleEdit = (user: User) => {
     setEditingUser(user);
-    form.setFieldsValue(user);
+    form.setFieldsValue({ ...user, data_scope: user.data_scope || 'all', site_ids: user.site_ids || [] });
     setModalVisible(true);
   };
 
@@ -63,6 +69,7 @@ export default function Users() {
 
   const handleSubmit = async (values: any) => {
     try {
+      if (values.role === 'admin') values = { ...values, data_scope: 'all', site_ids: [] };
       if (editingUser) {
         await userApi.update(editingUser.id, values);
         message.success('更新成功');
@@ -118,6 +125,16 @@ export default function Users() {
     { title: '邮箱', dataIndex: 'email', key: 'email', width: 190, ellipsis: true },
     { title: '角色', dataIndex: 'role', key: 'role', width: 90,
       render: (role: string) => <Tag color={getRoleColor(role)}>{getRoleText(role)}</Tag> },
+    { title: '数据范围', key: 'scope', width: 200, ellipsis: true,
+      render: (_: unknown, record: User) => {
+        if (record.role === 'admin' || (record.data_scope || 'all') === 'all') return <Tag color="gold">全部站点</Tag>;
+        const names = record.site_names || [];
+        return (
+          <Tooltip title={`${names.join('、')}（含下级站点）`}>
+            <Tag color="blue">{names.length ? `${names[0]}${names.length > 1 ? ` 等 ${names.length} 个` : ''}` : '未授权'}</Tag>
+          </Tooltip>
+        );
+      } },
     { title: '状态', dataIndex: 'status', key: 'status', width: 130,
       render: (status: string, record: User) => (
         <Space size={4}>
@@ -150,7 +167,7 @@ export default function Users() {
   return (
     <div>
       <Card
-        title="用户管理"
+        title="用户与门店权限"
         extra={
           <Space>
             <Button icon={<ReloadOutlined />} onClick={fetchUsers}>刷新</Button>
@@ -164,7 +181,7 @@ export default function Users() {
           rowKey="id"
           loading={loading}
           tableLayout="fixed"
-          scroll={{ x: 1095 }}
+          scroll={{ x: 1295 }}
           pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 个用户` }}
         />
       </Card>
@@ -193,11 +210,29 @@ export default function Users() {
           </Form.Item>
           <Form.Item name="role" label="角色" rules={[{ required: true, message: '请选择角色' }]}>
             <Select placeholder="选择角色">
-              <Select.Option value="admin">管理员</Select.Option>
-              <Select.Option value="operator">操作员</Select.Option>
-              <Select.Option value="viewer">只读</Select.Option>
+              <Select.Option value="admin">管理员（全部功能）</Select.Option>
+              <Select.Option value="operator">操作员（可配置设备、处理告警）</Select.Option>
+              <Select.Option value="viewer">只读（仅查看）</Select.Option>
             </Select>
           </Form.Item>
+          {role !== 'admin' && (
+            <>
+              <Form.Item name="data_scope" label="可查看的数据" initialValue="all">
+                <Radio.Group>
+                  <Radio value="all">全部站点（总部人员）</Radio>
+                  <Radio value="sites">指定站点 / 分支</Radio>
+                </Radio.Group>
+              </Form.Item>
+              {dataScope === 'sites' && (
+                <Form.Item name="site_ids" label="授权站点" rules={[{ required: true, type: 'array', min: 1, message: '请至少选择一个站点' }]}
+                  extra="授权分支即包含其下所有门店（以后新建的下级门店自动生效）。用户只能看到、操作这些站点的设备、服务器、告警和仪表盘数据。">
+                  <TreeSelect multiple treeCheckable showCheckedStrategy={TreeSelect.SHOW_PARENT}
+                    treeDefaultExpandAll placeholder="选择门店或分支" treeData={siteTreeData(sites)} />
+                </Form.Item>
+              )}
+            </>
+          )}
+          {role === 'admin' && <Alert type="info" showIcon style={{ marginBottom: 16 }} message="管理员始终可以查看和管理全部站点。" />}
           <Form.Item name="status" label="状态" initialValue="active">
             <Select>
               <Select.Option value="active">正常</Select.Option>

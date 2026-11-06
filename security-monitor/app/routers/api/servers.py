@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.core.crypto import decrypt, encrypt, new_access_token
 from app.core.database import db
+from app.core.scope import ensure_row_access, require_site_in_scope, scope_filter, site_scope
 from app.core.security import can_manage, require_operator, verify_token
 from app.routers.api.sites import clean_site_id
 
@@ -50,15 +51,21 @@ async def _server_public(server_id: int):
 
 
 @router.get("/servers")
-async def list_servers(payload: dict = Depends(verify_token)):
-    """获取服务器列表（含 Agent 信息，不返回 SSH 密码）"""
+async def list_servers(site_id: Optional[int] = None, payload: dict = Depends(verify_token)):
+    """获取服务器列表（含 Agent 信息，不返回 SSH 密码；按用户门店权限过滤）"""
+    cond, args = scope_filter("s.site_id", await site_scope(payload), [])
+    if site_id:
+        args.append(site_id)
+        cond += f" AND s.site_id = ${len(args)}"
     rows = await db.fetch_all(
         f"""
         SELECT {_SERVER_PUBLIC}
         FROM servers s
         LEFT JOIN sites si ON si.id = s.site_id
+        WHERE {cond}
         ORDER BY s.created_at DESC
-        """
+        """,
+        *args,
     )
     result = []
     for row in rows:
@@ -112,6 +119,7 @@ async def list_servers(payload: dict = Depends(verify_token)):
 @router.post("/servers")
 async def create_server(server: ServerCreate, payload: dict = Depends(require_operator)):
     """创建服务器并生成 Agent Token"""
+    await require_site_in_scope(payload, clean_site_id(server.site_id))
     _, enc, digest = new_access_token()
     mode = server.collect_mode or "agent"
     row = await db.fetch_one("""
@@ -128,8 +136,10 @@ async def create_server(server: ServerCreate, payload: dict = Depends(require_op
 @router.put("/servers/{server_id}")
 async def update_server(server_id: int, server: ServerCreate, payload: dict = Depends(require_operator)):
     """更新服务器"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     mode = server.collect_mode or "agent"
     site_id = clean_site_id(server.site_id)
+    await require_site_in_scope(payload, site_id)
     # 地址或端口变更后原主机密钥不再适用，下次连接重新记录
     await db.execute(
         "UPDATE servers SET ssh_host_key=NULL WHERE id=$1 AND (ip IS DISTINCT FROM $2 OR port IS DISTINCT FROM $3)",
@@ -158,6 +168,7 @@ async def update_server(server_id: int, server: ServerCreate, payload: dict = De
 @router.post("/servers/{server_id}/reset-host-key")
 async def reset_server_host_key(server_id: int, payload: dict = Depends(require_operator)):
     """清除已记录的 SSH 主机密钥（服务器重装系统后使用），下次连接重新记录"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     row = await db.fetch_one(
         "UPDATE servers SET ssh_host_key=NULL, updated_at=NOW() WHERE id=$1 RETURNING id", server_id
     )
@@ -169,6 +180,7 @@ async def reset_server_host_key(server_id: int, payload: dict = Depends(require_
 @router.post("/servers/{server_id}/reset-agent-token")
 async def reset_agent_token(server_id: int, payload: dict = Depends(require_operator)):
     """重置 Agent Token"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     plain, enc, digest = new_access_token()
     row = await db.fetch_one(
         """
@@ -213,6 +225,7 @@ async def _ensure_server_agent_token(server_id: int) -> dict:
 @router.get("/servers/{server_id}/agent-install")
 async def get_agent_install_info(server_id: int, payload: dict = Depends(require_operator)):
     """返回 Agent 安装说明与配置"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     row = await _ensure_server_agent_token(server_id)
     return {
         "server_id": row["id"],
@@ -240,6 +253,7 @@ async def download_agent_package(
     """下载预配置安装包（ZIP），配置已写入，小白可直接下一步安装"""
     from app.services.agent_package import build_agent_package
 
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     row = await _ensure_server_agent_token(server_id)
     url = (server_url or "").strip()
     if not url.startswith(("http://", "https://")):
@@ -268,6 +282,7 @@ async def download_agent_package(
 @router.delete("/servers/{server_id}")
 async def delete_server(server_id: int, payload: dict = Depends(require_operator)):
     """删除服务器"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     await db.execute("DELETE FROM host_metrics WHERE server_id=$1", server_id)
     await db.execute(
         "DELETE FROM health_alert_state WHERE source_type='server' AND source_id=$1",
@@ -280,6 +295,7 @@ async def delete_server(server_id: int, payload: dict = Depends(require_operator
 @router.post("/servers/{server_id}/test")
 async def test_server_connection(server_id: int, payload: dict = Depends(require_operator)):
     """测试服务器 SSH 连通性，并更新在线状态"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     from app.collector.log_collector import collector
 
     server = await db.fetch_one("SELECT * FROM servers WHERE id=$1", server_id)
@@ -318,6 +334,7 @@ async def test_server_connection(server_id: int, payload: dict = Depends(require
 @router.post("/servers/{server_id}/collect")
 async def collect_server_now(server_id: int, payload: dict = Depends(require_operator)):
     """立即采集该服务器日志并触发告警处理"""
+    await ensure_row_access(payload, "servers", server_id, "服务器")
     from app.collector.log_collector import collector
     from app.engine.rule_engine import rule_engine
 

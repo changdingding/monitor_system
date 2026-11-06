@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS network_devices (
     memory DOUBLE PRECISION,
     disk DOUBLE PRECISION,
     last_seen TIMESTAMP,
+    vendor VARCHAR(32),
+    source VARCHAR(20) DEFAULT 'manual',  -- manual | import | discovered | probe
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -146,6 +148,7 @@ CREATE TABLE IF NOT EXISTS users (
     nickname VARCHAR(100) NOT NULL,
     email VARCHAR(255),
     role VARCHAR(20) NOT NULL DEFAULT 'viewer',  -- 'admin', 'operator', 'viewer'
+    data_scope VARCHAR(10) NOT NULL DEFAULT 'all',  -- all 全部站点 | sites 仅 user_sites 中的站点及其下级
     status VARCHAR(20) NOT NULL DEFAULT 'active',  -- 'active', 'disabled'
     must_change_password BOOLEAN NOT NULL DEFAULT FALSE,  -- 首次登录 / 重置后需改密
     failed_login_count INTEGER NOT NULL DEFAULT 0,  -- 连续登录失败次数
@@ -244,8 +247,20 @@ ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS sites (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    site_type VARCHAR(20) NOT NULL DEFAULT 'store',  -- store | cloud
+    site_type VARCHAR(20) NOT NULL DEFAULT 'store',  -- hq 总部 | branch 分支/区域 | store 门店 | cloud 云端
+    parent_id INTEGER REFERENCES sites(id) ON DELETE SET NULL,  -- 上级站点（分支管理）
+    code VARCHAR(50),
     city VARCHAR(100),
+    address VARCHAR(255),
+    contact VARCHAR(100),
+    phone VARCHAR(50),
+    snmp_community TEXT,  -- 站点默认团体字（加密），下发给采集器
+    scan_enabled BOOLEAN NOT NULL DEFAULT FALSE,  -- 采集器按网段自动发现设备
+    scan_cidrs TEXT,
+    probe_interval_seconds INTEGER NOT NULL DEFAULT 60,
+    probe_version VARCHAR(32),
+    probe_hostname VARCHAR(255),
+    collect_mode VARCHAR(10) NOT NULL DEFAULT 'probe',  -- probe 站内采集器上报 | central 总部平台直接轮询
     probe_token TEXT,  -- 加密存储（enc:v1:...）
     probe_token_hash VARCHAR(64),  -- SHA-256，用于采集器鉴权查找
     status VARCHAR(20) DEFAULT 'offline',  -- online | offline
@@ -395,3 +410,22 @@ CREATE TABLE IF NOT EXISTS log_analyses (
 
 CREATE INDEX IF NOT EXISTS idx_log_analyses_created ON log_analyses(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_log_analyses_server ON log_analyses(server_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sites_parent ON sites(parent_id);
+
+-- 用户可访问的站点（data_scope = 'sites' 时生效，含下级站点）
+CREATE TABLE IF NOT EXISTS user_sites (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, site_id)
+);
+
+-- 系统启用状态（单行）：启用前可清理实施期数据，启用后不可清除
+CREATE TABLE IF NOT EXISTS system_state (
+    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    activated BOOLEAN NOT NULL DEFAULT FALSE,
+    activated_at TIMESTAMP,
+    activated_by VARCHAR(100),
+    note TEXT
+);
+INSERT INTO system_state (id, activated) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING;

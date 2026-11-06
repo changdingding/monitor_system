@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from app.core.crypto import decrypt
 from app.core.database import db
+from app.core.scope import ensure_row_access, scope_filter, site_scope
+from app.core.system_state import forbid_after_activation
 from app.core.security import require_operator, verify_token
 from app.services import ai_analyzer
 from app.services.log_fetch import LOG_TYPES, LogFetchError, build_command, fetch_server_logs, log_types_for
@@ -45,11 +47,8 @@ _LIST_COLUMNS = """
 """
 
 
-async def _load_server(server_id: int) -> dict:
-    row = await db.fetch_one("SELECT * FROM servers WHERE id=$1", server_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="服务器不存在")
-    server = dict(row)
+async def _load_server(server_id: int, payload: dict) -> dict:
+    server = await ensure_row_access(payload, "servers", server_id, "服务器")
     server["password"] = decrypt(server.get("password"))
     return server
 
@@ -67,7 +66,7 @@ async def get_log_types(os_type: str = Query("linux"), payload: dict = Depends(v
 @router.post("/log-analysis/fetch")
 async def fetch_logs(body: FetchRequest, payload: dict = Depends(require_operator)):
     """只拉取并预览日志（已脱敏），不调用 AI"""
-    server = await _load_server(body.server_id)
+    server = await _load_server(body.server_id, payload)
     cfg = await ai_analyzer.load_config()
     try:
         raw = await fetch_server_logs(server, body.log_type, body.lines, body.since_minutes, body.unit, body.path)
@@ -134,7 +133,7 @@ async def create_analysis(body: AnalyzeRequest, payload: dict = Depends(require_
     if body.source == "ssh":
         if not body.server_id:
             raise HTTPException(status_code=400, detail="请选择服务器")
-        server = await _load_server(body.server_id)
+        server = await _load_server(body.server_id, payload)
         try:  # 提前校验参数，非法输入直接返回 400 而不是生成一条失败记录
             build_command(server.get("os_type"), body.log_type, body.lines, body.since_minutes, body.unit, body.path)
         except LogFetchError as e:
@@ -143,7 +142,7 @@ async def create_analysis(body: AnalyzeRequest, payload: dict = Depends(require_
         if not (body.content or "").strip():
             raise HTTPException(status_code=400, detail="请粘贴要分析的日志内容")
         if body.server_id:
-            server = await _load_server(body.server_id)
+            server = await _load_server(body.server_id, payload)
 
     params = {"lines": body.lines, "since_minutes": body.since_minutes, "unit": body.unit,
               "path": body.path, "note": body.note}
@@ -170,9 +169,10 @@ async def list_analyses(
     server_id: Optional[int] = None,
     payload: dict = Depends(verify_token),
 ):
-    where, args = "", []
+    where, args = await _visible(payload)
     if server_id:
-        where, args = "WHERE server_id=$1", [server_id]
+        args.append(server_id)
+        where += f" AND server_id=${len(args)}"
     total = (await db.fetch_one(f"SELECT COUNT(*) AS n FROM log_analyses {where}", *args))["n"]
     n = len(args)
     rows = await db.fetch_all(
@@ -184,9 +184,22 @@ async def list_analyses(
     return {"items": rows, "total": total, "page": page, "size": size}
 
 
+async def _visible(payload: dict) -> tuple:
+    """受限用户：只看范围内服务器的分析，以及自己发起的未关联服务器的分析"""
+    scope = await site_scope(payload)
+    if scope is None:
+        return "WHERE TRUE", []
+    cond, args = scope_filter("site_id", scope, [])
+    args.append(payload.get("username"))
+    return (f"WHERE (server_id IN (SELECT id FROM servers WHERE {cond})"
+            f" OR (server_id IS NULL AND created_by = ${len(args)}))"), args
+
+
 @router.get("/log-analysis/{analysis_id}")
 async def get_analysis(analysis_id: int, payload: dict = Depends(verify_token)):
-    row = await db.fetch_one("SELECT * FROM log_analyses WHERE id=$1", analysis_id)
+    where, args = await _visible(payload)
+    args.append(analysis_id)
+    row = await db.fetch_one(f"SELECT * FROM log_analyses {where} AND id=${len(args)}", *args)
     if not row:
         raise HTTPException(status_code=404, detail="分析记录不存在")
     row["log_label"] = "粘贴日志" if row["source"] == "manual" else _label(row["log_type"])
@@ -195,7 +208,10 @@ async def get_analysis(analysis_id: int, payload: dict = Depends(verify_token)):
 
 @router.delete("/log-analysis/{analysis_id}")
 async def delete_analysis(analysis_id: int, payload: dict = Depends(require_operator)):
-    row = await db.fetch_one("DELETE FROM log_analyses WHERE id=$1 RETURNING id", analysis_id)
+    await forbid_after_activation("分析记录")
+    where, args = await _visible(payload)
+    args.append(analysis_id)
+    row = await db.fetch_one(f"DELETE FROM log_analyses {where} AND id=${len(args)} RETURNING id", *args)
     if not row:
         raise HTTPException(status_code=404, detail="分析记录不存在")
     return {"status": "success"}

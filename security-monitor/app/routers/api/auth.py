@@ -17,6 +17,7 @@ from app.core.security import (
     issue_token,
     validate_password,
     verify_password,
+    verify_token,
 )
 
 router = APIRouter()
@@ -159,3 +160,31 @@ async def change_own_password(body: ChangePasswordRequest, payload: dict = Depen
         hash_password(new_password), user["id"],
     )
     return {"status": "success", "token": issue_token(dict(updated))}
+
+
+@router.get("/auth/me")
+async def current_user(payload: dict = Depends(verify_token)):
+    """当前登录用户、数据范围和系统启用状态（前端据此显示菜单与提示）"""
+    from app.core.scope import site_scope
+    from app.core.system_state import get_state
+
+    user = await db.fetch_one(
+        "SELECT id, username, nickname, email, role, status, data_scope, last_login FROM users WHERE id=$1",
+        payload.get("user_id"),
+    )
+    scope = await site_scope(payload)
+    sites = []
+    if scope is not None and scope:
+        sites = await db.fetch_all(
+            "SELECT s.id, s.name, s.site_type FROM user_sites us JOIN sites s ON s.id = us.site_id "
+            "WHERE us.user_id=$1 ORDER BY s.name",
+            payload.get("user_id"),
+        )
+    state = await get_state()
+    return {
+        **dict(user),
+        "data_scope": "all" if scope is None else "sites",
+        "scope_sites": sites,
+        "scope_site_count": None if scope is None else len(scope),
+        "system_activated": bool(state.get("activated")),
+    }

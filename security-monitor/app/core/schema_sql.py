@@ -261,4 +261,49 @@ SCHEMA_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_log_analyses_created ON log_analyses(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_log_analyses_server ON log_analyses(server_id, created_at DESC)",
+    # ---- 站点树（总部 / 分支 / 门店 / 云端）与集中下发采集配置 ----
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS parent_id INTEGER",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS code VARCHAR(50)",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS address VARCHAR(255)",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS contact VARCHAR(100)",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS phone VARCHAR(50)",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS snmp_community TEXT",  # 站点默认团体字（加密），设备未单独填写时使用
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS scan_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS scan_cidrs TEXT",  # 自动发现网段，逗号 / 换行分隔
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS probe_interval_seconds INTEGER NOT NULL DEFAULT 60",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS probe_version VARCHAR(32)",
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS probe_hostname VARCHAR(255)",
+    # probe：站内采集器上报；central：总部平台直接 SNMP 轮询（平台与设备在同一内网，如总部机房）
+    "ALTER TABLE sites ADD COLUMN IF NOT EXISTS collect_mode VARCHAR(10) NOT NULL DEFAULT 'probe'",
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sites_parent_id_fkey') THEN
+            ALTER TABLE sites ADD CONSTRAINT sites_parent_id_fkey
+                FOREIGN KEY (parent_id) REFERENCES sites(id) ON DELETE SET NULL;
+        END IF;
+    END $$
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_sites_parent ON sites(parent_id)",
+    "ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual'",  # manual | import | discovered | probe
+    # ---- 用户数据范围：all=全部站点；sites=仅 user_sites 中的站点及其下级 ----
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS data_scope VARCHAR(10) NOT NULL DEFAULT 'all'",
+    """
+    CREATE TABLE IF NOT EXISTS user_sites (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, site_id)
+    )
+    """,
+    # ---- 系统启用状态（单行）：启用前可清理实施数据，启用后不可清除 ----
+    """
+    CREATE TABLE IF NOT EXISTS system_state (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        activated BOOLEAN NOT NULL DEFAULT FALSE,
+        activated_at TIMESTAMP,
+        activated_by VARCHAR(100),
+        note TEXT
+    )
+    """,
+    "INSERT INTO system_state (id, activated) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING",
 ]

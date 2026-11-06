@@ -53,11 +53,12 @@ export const authApi = {
       { old_password: oldPassword, new_password: newPassword },
       token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
     ),
+  me: () => api.get('/auth/me'),
 };
 
 // 服务器 API
 export const serverApi = {
-  list: () => api.get('/servers'),
+  list: (params?: { site_id?: number }) => api.get('/servers', { params }),
   get: (id: number) => api.get(`/servers/${id}`),
   create: (data: any) => api.post('/servers', data),
   update: (id: number, data: any) => api.put(`/servers/${id}`, data),
@@ -74,13 +75,14 @@ export const serverApi = {
     }),
 };
 
-// 网络设备 API
+// 站点 API（总部 / 分支 / 门店 / 云端）
 export const siteApi = {
   list: () => api.get('/sites'),
   create: (data: any) => api.post('/sites', data),
   update: (id: number, data: any) => api.put(`/sites/${id}`, data),
   delete: (id: number) => api.delete(`/sites/${id}`),
   resetToken: (id: number) => api.post(`/sites/${id}/reset-probe-token`),
+  clearCommunity: (id: number) => api.delete(`/sites/${id}/community`),
   downloadPackage: (id: number, serverUrl: string) =>
     api.get(`/sites/${id}/probe-package`, {
       params: { server_url: serverUrl },
@@ -88,8 +90,19 @@ export const siteApi = {
     }),
 };
 
+// 网络设备 API
+export interface DeviceImportRow {
+  name?: string;
+  ip: string;
+  device_type?: string;
+  snmp_community?: string;
+  snmp_port?: number;
+}
+
 export const networkDeviceApi = {
-  list: () => api.get('/network-devices'),
+  list: (params?: { site_id?: number; status?: string }) => api.get('/network-devices', { params }),
+  import: (siteId: number, devices: DeviceImportRow[], overwrite = false) =>
+    api.post('/network-devices/import', { site_id: siteId, devices, overwrite }),
   get: (id: number) => api.get(`/network-devices/${id}`),
   create: (data: any) => api.post('/network-devices', data),
   update: (id: number, data: any) => api.put(`/network-devices/${id}`, data),
@@ -98,8 +111,10 @@ export const networkDeviceApi = {
 
 // 告警 API
 export const alertApi = {
-  list: (params?: { page?: number; size?: number; level?: string; status?: string }) =>
-    api.get('/alerts', { params }),
+  list: (params?: {
+    page?: number; size?: number; level?: string; status?: string; site_id?: number;
+    source_type?: string; keyword?: string;
+  }) => api.get('/alerts', { params }),
   get: (id: number) => api.get(`/alerts/${id}`),
   stats: () => api.get('/alerts/stats'),
   updateStatus: (id: number, status: string) => api.patch(`/alerts/${id}/status`, { status }),
@@ -131,6 +146,14 @@ export const auditApi = {
     success?: boolean; start?: string; end?: string;
   }) => api.get('/audit-logs', { params }),
   actions: () => api.get('/audit-logs/actions'),
+};
+
+// 系统启用 / 实施数据清理（purge / activate 仅管理员）
+export const systemApi = {
+  state: () => api.get('/system/state'),
+  purgePreview: () => api.get('/system/purge-preview'),
+  purge: (categories: string[], confirm: string) => api.post('/system/purge', { categories, confirm }),
+  activate: (confirm: string, note?: string) => api.post('/system/activate', { confirm, note }),
 };
 
 // 系统设置 API
@@ -180,6 +203,10 @@ export const dashboardApi = {
   siteDetail: (id: number) => api.get(`/dashboard/sites/${id}`),
   serverMetrics: (id: number, hours: number = 24) =>
     api.get(`/dashboard/servers/${id}/metrics`, { params: { hours } }),
+  deviceMetrics: (id: number, hours: number = 24) =>
+    api.get(`/dashboard/devices/${id}/metrics`, { params: { hours } }),
+  distribution: () => api.get('/dashboard/distribution'),
+  insights: () => api.get('/dashboard/insights'),
 };
 
 export default api;

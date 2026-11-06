@@ -33,6 +33,10 @@ ACTIONS: Dict[tuple, str] = {
     ("PUT", "/sites/{site_id}"): "修改站点",
     ("DELETE", "/sites/{site_id}"): "删除站点",
     ("POST", "/sites/{site_id}/reset-probe-token"): "重置采集器 Token",
+    ("DELETE", "/sites/{site_id}/community"): "清除站点团体字",
+    ("POST", "/network-devices/import"): "批量导入网络设备",
+    ("POST", "/system/purge"): "清理实施数据",
+    ("POST", "/system/activate"): "系统正式启用",
     ("POST", "/servers"): "新增服务器",
     ("PUT", "/servers/{server_id}"): "修改服务器",
     ("DELETE", "/servers/{server_id}"): "删除服务器",
@@ -72,6 +76,7 @@ TARGETS = {
     "auth": ("auth", None, None),
     "ai": ("ai", None, None),
     "log-analysis": ("log_analysis", "log_analyses", "server_name"),
+    "system": ("system", None, None),
 }
 
 

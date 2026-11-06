@@ -167,6 +167,7 @@ class Scheduler:
             "community": decrypt(device.get("snmp_community")) or "public",
             "port": int(device.get("snmp_port") or 161),
         }
+        metrics: dict = {}
         try:
             alerts = await monitor.check_device_health(
                 device_id=device_id,
@@ -174,6 +175,7 @@ class Scheduler:
                 host=host,
                 snmp_config=snmp_config,
                 thresholds=thresholds,
+                metrics_out=metrics,
             )
         except DeviceUnreachable as e:
             logger.warning(f"设备 {name} 不可达：{e}")
@@ -187,11 +189,44 @@ class Scheduler:
                 await rule_engine.process_network_alert(alert)
                 if alert.get("severity") in ("critical", "high"):
                     status = "error"
-        await db.execute(
-            "UPDATE network_devices SET status=$1, updated_at=NOW() WHERE id=$2",
-            status,
-            device_id,
-        )
+        if metrics:
+            await db.execute(
+                """
+                UPDATE network_devices SET status=$1, cpu=$2, memory=$3, vendor=COALESCE($4, vendor),
+                       last_seen=NOW(), updated_at=NOW()
+                WHERE id=$5
+                """,
+                status, metrics.get("cpu"), metrics.get("memory"), metrics.get("vendor"), device_id,
+            )
+            for metric in ("cpu", "memory"):
+                if metrics.get(metric) is not None:
+                    await db.execute(
+                        "INSERT INTO snmp_metrics (device_id, metric_type, metric_value, metric_unit, collected_at) "
+                        "VALUES ($1, $2, $3, '%', NOW())",
+                        device_id, metric, float(metrics[metric]),
+                    )
+        else:
+            await db.execute(
+                "UPDATE network_devices SET status=$1, updated_at=NOW() WHERE id=$2",
+                status,
+                device_id,
+            )
+        if device.get("site_id") and status in ("online", "offline", "error"):
+            # 归属站点的总部轮询设备：离线进入健康告警（登录 / 恢复各推一次）
+            from app.services.health import sync_condition
+            await sync_condition(
+                event_key=f"device:{device_id}:offline",
+                active=status == "offline",
+                site_id=device["site_id"],
+                source_type="network",
+                source_id=device_id,
+                source_name=name,
+                host=host,
+                alert_type="offline",
+                severity="critical",
+                message="网络设备 SNMP 不可达（总部平台轮询）",
+                site_name=device.get("site_name") or "",
+            )
 
     async def check_network_devices(self):
         """检查网络设备状态"""
@@ -199,10 +234,13 @@ class Scheduler:
         try:
             device_list = await db.fetch_all(
                 """
-                SELECT id, name, ip, snmp_version, snmp_community, snmp_port
-                FROM network_devices
-                WHERE site_id IS NULL
-                ORDER BY id
+                SELECT d.id, d.name, d.ip, d.snmp_version,
+                       COALESCE(d.snmp_community, si.snmp_community) AS snmp_community, d.snmp_port,
+                       d.site_id, si.name AS site_name
+                FROM network_devices d
+                LEFT JOIN sites si ON si.id = d.site_id
+                WHERE d.site_id IS NULL OR (si.collect_mode = 'central' AND si.site_type <> 'cloud')
+                ORDER BY d.id
                 """
             )
             thresholds = await get_thresholds()

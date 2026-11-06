@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-门店边缘采集器。
-在门店局域网内按厂商模板读 SNMP，端口走标准 IF-MIB。
-总部暂时连不上时，样本先落在 spool/，恢复后按时间补报。团体字不上传。
+边缘采集器（门店 / 分支 / 总部机房通用）。
+
+- 设备清单、团体字、自动发现网段在总部网页上集中配置，采集器每轮从 /api/v1/probe/config 拉取；
+  本地 config.json 只需要 server_url 和 probe_token（安装向导里可修改）
+- 本地 config.json 的 devices 仍然有效（同 IP 时以本地为准），方便临时加设备
+- 按厂商模板读 SNMP，端口走标准 IF-MIB；多台设备并发采集
+- 开启自动发现后，按网段扫描 SNMP 设备，发现的新设备自动上报建档
+- 总部暂时连不上时，样本先落在 spool/，恢复后按时间补报；集中配置缓存在 remote_config.json
+
+命令行：
+  python probe.py          运行采集
+  python probe.py --test   测试与总部的连接并打印下发的配置，然后退出
 """
 from __future__ import annotations
 
@@ -13,18 +22,25 @@ import socket
 import subprocess
 import sys
 import time
+import ipaddress
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 from snmp_client import snmp_get, snmp_walk
 
-PROBE_VERSION = "1.1.0"
+PROBE_VERSION = "1.2.0"
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+REMOTE_CACHE = BASE_DIR / "remote_config.json"
 SPOOL_DIR = BASE_DIR / "spool"
 MAX_SPOOL = 480
+MAX_WORKERS = 16  # 并发采集的设备数
+SCAN_WORKERS = 64
+SCAN_MAX_HOSTS = 4096
+SYS_NAME = "1.3.6.1.2.1.1.5.0"
 
 SYS_DESCR = "1.3.6.1.2.1.1.1.0"
 SYS_OBJECT = "1.3.6.1.2.1.1.2.0"
@@ -109,12 +125,16 @@ def load_config() -> dict:
     return cfg
 
 
-def api_post(cfg: dict, path: str, payload: dict) -> dict:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+def api_get(cfg: dict, path: str) -> dict:
+    return api_post(cfg, path, None, method="GET")
+
+
+def api_post(cfg: dict, path: str, payload, method: str = "POST") -> dict:
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"{cfg['server_url']}{path}",
         data=data,
-        method="POST",
+        method=method,
         headers={
             "Content-Type": "application/json",
             "X-Probe-Token": cfg["probe_token"],
@@ -375,18 +395,175 @@ def collect_device(item: dict, collected_at: str) -> dict:
     return payload
 
 
-def main():
+def fetch_remote_config(cfg: dict) -> dict:
+    """拉取总部下发的配置；失败时使用上次缓存，保证断网时也能继续采集"""
+    try:
+        remote = api_get(cfg, "/api/v1/probe/config")
+        try:
+            REMOTE_CACHE.write_text(json.dumps(remote, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        return remote
+    except ProbeApiError as exc:
+        if not exc.retryable:
+            print(f"[!] 拉取集中配置被拒绝：{exc}")
+        if REMOTE_CACHE.exists():
+            try:
+                return json.loads(REMOTE_CACHE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+    return {}
+
+
+def merge_devices(remote: dict, cfg: dict) -> list:
+    """总部下发 + 本地 config.json，同 IP 以本地为准"""
+    merged = {}
+    for item in remote.get("devices") or []:
+        if item.get("ip"):
+            merged[str(item["ip"]).strip()] = dict(item)
+    for item in cfg.get("devices") or []:
+        if item.get("ip"):
+            ip = str(item["ip"]).strip()
+            merged[ip] = {**merged.get(ip, {}), **item}
+    return list(merged.values())
+
+
+def scan_hosts(cidrs) -> list:
+    hosts = []
+    for cidr in cidrs or []:
+        try:
+            net = ipaddress.ip_network(str(cidr).strip(), strict=False)
+        except ValueError:
+            print(f"[!] 忽略无效网段 {cidr}")
+            continue
+        if net.version != 4 or not net.is_private or net.prefixlen < 22:
+            print(f"[!] 忽略网段 {cidr}（仅允许 /22 及更小的内网网段）")
+            continue
+        hosts.extend(str(h) for h in net.hosts())
+        if len(hosts) >= SCAN_MAX_HOSTS:
+            break
+    return list(dict.fromkeys(hosts))[:SCAN_MAX_HOSTS]
+
+
+def discover(scan: dict, known_ips: set) -> list:
+    """按网段扫描 SNMP 设备，返回未建档的设备（name / ip / community）"""
+    community = str(scan.get("community") or "public")
+    port = int(scan.get("snmp_port") or 161)
+    targets = [ip for ip in scan_hosts(scan.get("cidrs")) if ip not in known_ips]
+    if not targets:
+        return []
+
+    def probe_one(ip):
+        descr = snmp_get(ip, community, SYS_DESCR, port, timeout=1.0)
+        if descr is None:
+            return None
+        name = snmp_get(ip, community, SYS_NAME, port, timeout=1.0)
+        text = str(descr or "").lower()
+        if "firewall" in text or "usg" in text or "fortigate" in text:
+            device_type = "firewall"
+        elif "router" in text or " ar" in text or "isr" in text:
+            device_type = "router"
+        elif "switch" in text or "s57" in text or "s56" in text or "catalyst" in text:
+            device_type = "switch"
+        else:
+            device_type = "other"
+        return {
+            "name": str(name or ip).strip()[:100] or ip,
+            "ip": ip,
+            "device_type": device_type,
+            "community": community,
+            "snmp_port": port,
+            "discovered": True,
+            "sys_name": str(name).strip()[:100] if name else None,
+        }
+
+    print(f"[*] 自动发现：扫描 {len(targets)} 个地址…")
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
+        found = [item for item in pool.map(probe_one, targets) if item]
+    print(f"[*] 自动发现：新发现 {len(found)} 台 SNMP 设备")
+    return found
+
+
+def collect_all(devices: list, collected_at: str) -> list:
+    def one(item):
+        try:
+            result = collect_device(item, collected_at)
+        except Exception as exc:  # 单台设备异常不影响其他设备
+            print(f"[!] 采集 {item.get('ip')} 失败：{exc}")
+            result = {"name": item.get("name") or item.get("ip"), "ip": item.get("ip"),
+                      "device_type": item.get("device_type") or "other", "reachable": False,
+                      "snmp_ok": False, "collected_at": collected_at, "interfaces": []}
+        if item.get("discovered"):
+            result["discovered"] = True
+            result["sys_name"] = item.get("sys_name")
+        return result
+
+    if not devices:
+        return []
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(devices))) as pool:
+        return list(pool.map(one, devices))
+
+
+def run_test() -> int:
     cfg = load_config()
-    print(f"[*] Store probe {PROBE_VERSION} on {platform.node()}")
+    print(f"[*] 总部地址：{cfg['server_url']}")
+    try:
+        result = api_post(cfg, "/api/v1/probe/heartbeat", {
+            "hostname": platform.node(), "probe_version": PROBE_VERSION, "collected_at": now_text(),
+        })
+        print(f"[OK] 心跳成功，站点：{result.get('site_name')}（ID {result.get('site_id')}）")
+        remote = api_get(cfg, "/api/v1/probe/config")
+    except ProbeApiError as exc:
+        print(f"[失败] {exc}")
+        return 1
+    devices = remote.get("devices") or []
+    print(f"[OK] 总部下发 {len(devices)} 台设备，采集间隔 {remote.get('interval_seconds')} 秒")
+    for item in devices[:20]:
+        print(f"     - {item.get('name')}  {item.get('ip')}")
+    scan = remote.get("scan") or {}
+    if scan.get("enabled"):
+        print(f"[OK] 自动发现网段：{', '.join(scan.get('cidrs') or [])}")
+    return 0
+
+
+LOG_PATH = BASE_DIR / "probe.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _open_service_log():
+    """以服务方式运行时输出写入 probe.log（超过 5MB 轮转一份 probe.log.1）"""
+    try:
+        if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
+            LOG_PATH.replace(LOG_PATH.with_suffix(".log.1"))
+        stream = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = stream
+    except OSError:
+        pass
+
+
+def main():
+    if "--test" in sys.argv[1:]:
+        sys.exit(run_test())
+    service = "--service" in sys.argv[1:]
+    if service:
+        _open_service_log()
+    cfg = load_config()
+    print(f"[*] Edge probe {PROBE_VERSION} on {platform.node()}")
     print(f"[*] Reporting to {cfg['server_url']}")
+    last_scan = 0.0
     while True:
         collected_at = now_text()
+        remote = {}
+        interval = int(cfg.get("interval_seconds") or 60)
         try:
-            devices = [
-                collect_device(item, collected_at)
-                for item in (cfg.get("devices") or [])
-                if item.get("ip")
-            ]
+            remote = fetch_remote_config(cfg)
+            interval = int(remote.get("interval_seconds") or interval)
+            device_list = [item for item in merge_devices(remote, cfg) if item.get("ip")]
+            scan = remote.get("scan") or {}
+            if scan.get("enabled") and time.time() - last_scan >= int(scan.get("interval_minutes") or 60) * 60:
+                last_scan = time.time()
+                device_list += discover(scan, {str(item["ip"]).strip() for item in device_list})
+            devices = collect_all(device_list, collected_at)
             heartbeat = {
                 "hostname": platform.node(),
                 "probe_version": PROBE_VERSION,
@@ -397,9 +574,9 @@ def main():
                 send_or_spool(cfg, "/api/v1/probe/heartbeat", heartbeat)
                 if devices:
                     if send_or_spool(cfg, "/api/v1/probe/report", report):
-                        print(f"[*] reported {len(devices)} devices")
+                        print(f"[*] {now_text()} reported {len(devices)} devices")
                 else:
-                    print("[*] heartbeat ok, no devices in config.json")
+                    print("[*] 心跳正常；总部尚未为本站点配置设备（请在「网络设备」中添加或开启自动发现）")
             else:
                 spool_append("/api/v1/probe/heartbeat", heartbeat)
                 if devices:
@@ -407,7 +584,9 @@ def main():
                 print("[*] 总部不可达，本轮已暂存")
         except Exception as exc:
             print(f"[!] {exc}")
-        time.sleep(int(cfg.get("interval_seconds") or 60))
+        if service and LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX_BYTES:
+            _open_service_log()
+        time.sleep(max(30, interval))
 
 
 if __name__ == "__main__":

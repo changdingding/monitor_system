@@ -1,5 +1,5 @@
 """
-网络设备监控模块（总部直连设备，site_id 为空的那部分）
+网络设备监控模块（总部平台直接轮询的设备：未归属站点，或所属站点采集方式为 central）
 
 SNMP 读取复用门店采集器 probe/ 中的实现（无第三方依赖、支持多厂商 OID），
 同步 socket 调用放到线程池执行，避免阻塞事件循环。
@@ -68,13 +68,16 @@ class NetworkMonitor:
         host: str,
         snmp_config: Dict[str, Any],
         thresholds: Optional[Dict[str, Any]] = None,
+        metrics_out: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        检查设备健康状态，返回资源告警列表。
+        检查设备健康状态，返回资源告警列表；metrics_out 不为空时写入采集到的 vendor / cpu / memory。
         设备不可达时抛出 DeviceUnreachable，由调用方标记离线。
         """
         thresholds = thresholds or {}
         metrics = await self.collect_device_metrics(host, snmp_config)
+        if metrics_out is not None:
+            metrics_out.update(metrics)
         alerts: List[Dict[str, Any]] = []
         checks = (
             ("cpu", "high_cpu", "CPU 使用率过高", thresholds.get("cpu", 90)),

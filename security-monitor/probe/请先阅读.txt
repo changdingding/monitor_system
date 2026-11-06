@@ -1,17 +1,26 @@
-门店边缘采集器
+边缘采集器（门店 / 分支 / 总部机房通用）
 
-1. 需要本机已安装 Python 3.8 或更高版本。
-2. 把整个目录放在门店一台一直开着的电脑上，这台电脑要能访问店内交换机，并且能访问总部管理端。
-3. config.json 里已经写好总部地址和 Token。请把 devices 改成店内真实设备，例如：
-   {
-     "name": "核心交换机",
-     "ip": "192.168.1.1",
-     "device_type": "switch",
-     "community": "你的团体字",
-     "snmp_port": 161
-   }
-4. SNMP 团体字只留在这台电脑上，不会上传到总部。
-5. Windows 双击「启动采集器.bat」。Linux 执行：bash run.sh
-6. 设备可以不填 vendor，采集器会按 sysObjectID 识别华为、华三、思科、锐捷和 Linux，并用标准 IF-MIB 读端口。识别失败时按通用 OID 再试一次。
-7. 总部暂时连不上时，数据写在同目录的 spool 文件夹，恢复后自动补报。不要在采集器运行时删掉 spool。
-8. 回到总部「门店」页面，采集器应变为在线。服务器资源不经过本采集器，请在每台服务器上安装 Agent。
+一、它做什么
+  放在站点内一台常开的电脑上，读取站内交换机 / 路由器 / 防火墙的 SNMP 数据，主动上报总部。
+  总部拨不进门店内网也没关系，由采集器主动连总部。
+
+二、设备不用在这里配置
+  设备清单、SNMP 团体字、自动发现网段，都在总部网页上配置：
+    · 「站点」→ 编辑站点：设置默认团体字、开启「自动发现」并填写网段（如 192.168.1.0/24）
+    · 「网络设备」→ 批量导入：一次粘贴整店设备清单
+  采集器每轮自动拉取最新配置，新增设备无需到现场。
+
+三、安装（推荐）
+  Windows：双击「安装采集器.bat」→ 点「是」授权 → 确认总部地址和 Token → 测试连接 → 安装
+           安装后开机自动运行；以后改参数，运行安装目录 C:\Program Files\SecurityMonitorProbe\修改配置.bat
+  Linux：  sudo sh linux/install.sh        （改参数：sudo sh /opt/security-monitor-probe/linux/install.sh --config）
+  需要本机已安装 Python 3.8 或更高版本（Windows 安装时勾选 Add to PATH）。
+
+四、免安装临时运行
+  Windows 双击「启动采集器.bat」；Linux 执行 sh run.sh。关掉窗口即停止。
+
+五、其他
+  · config.json 里的 devices 仍可填写（同 IP 以本地为准），一般留空即可。
+  · 总部暂时连不上时，数据写在 spool 文件夹，恢复后自动补报；集中配置缓存在 remote_config.json。
+  · 测试连接：python probe.py --test
+  · 服务器资源不经过本采集器，请在每台服务器上安装 Agent。

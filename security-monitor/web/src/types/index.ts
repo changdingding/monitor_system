@@ -23,7 +23,7 @@ export interface NetworkDevice {
   id: number;
   name: string;
   ip: string;
-  device_type: 'switch' | 'router' | 'firewall' | 'other';
+  device_type: 'switch' | 'router' | 'firewall' | 'ap' | 'other';
   snmp_version: 'v2c' | 'v3';
   snmp_community?: string;
   snmp_port: number;
@@ -36,6 +36,10 @@ export interface NetworkDevice {
   memory?: number | null;
   last_seen?: string;
   vendor?: string;
+  source?: 'manual' | 'import' | 'discovered' | 'probe';
+  site_type?: SiteType;
+  if_up?: number;
+  if_total?: number;
   created_at: string;
   updated_at: string;
 }
@@ -87,6 +91,9 @@ export interface User {
   email?: string;
   role: 'admin' | 'operator' | 'viewer';
   status: 'active' | 'disabled';
+  data_scope?: 'all' | 'sites';
+  site_ids?: number[];
+  site_names?: string[];
   last_login?: string;
   locked_until?: string | null;  // 非空表示当前处于登录锁定
   created_at: string;
@@ -124,14 +131,35 @@ export interface SystemSettings {
   offline_seconds?: number;
 }
 
+export type SiteType = 'hq' | 'branch' | 'store' | 'cloud';
+
+export const SITE_TYPE_LABELS: Record<SiteType, string> = {
+  hq: '总部', branch: '分支', store: '门店', cloud: '云端',
+};
+
 export interface Site {
   id: number;
   name: string;
-  site_type: 'store' | 'cloud';
+  site_type: SiteType;
+  parent_id?: number | null;
+  parent_name?: string | null;
+  code?: string | null;
   city?: string;
+  address?: string | null;
+  contact?: string | null;
+  phone?: string | null;
   probe_token?: string;
   status: 'online' | 'offline';
   last_seen?: string;
+  probe_version?: string | null;
+  probe_hostname?: string | null;
+  collect_mode?: 'probe' | 'central';
+  scan_enabled?: boolean;
+  scan_cidrs?: string | null;
+  probe_interval_seconds?: number;
+  has_community?: boolean;
+  device_count?: number;
+  server_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -139,7 +167,13 @@ export interface Site {
 export interface DashboardSite {
   id: number;
   name: string;
-  site_type: 'store' | 'cloud';
+  site_type: SiteType;
+  parent_id?: number | null;
+  code?: string | null;
+  collect_mode?: 'probe' | 'central';
+  probe_down?: boolean;
+  probe_version?: string | null;
+  if_down?: number;
   city?: string;
   status: string;
   last_seen?: string;
@@ -167,6 +201,64 @@ export interface DashboardOverview {
   store_sites?: number;
   online_probes?: number;
   active_health_alerts?: number;
+  error_devices?: number;
+  interfaces_total?: number;
+  interfaces_up?: number;
+  interfaces_down?: number;
+  alerts_24h?: number;
+  alerts_prev_24h?: number;
+  hq_sites?: number;
+  branch_sites?: number;
+  cloud_sites?: number;
+  probe_sites?: number;
+}
+
+export interface Insight {
+  level: 'danger' | 'warn' | 'info' | 'good';
+  title: string;
+  detail: string;
+  link?: string | null;
+}
+
+export interface Insights {
+  score: number;
+  level: 'good' | 'warn' | 'danger';
+  summary: string;
+  items: Insight[];
+}
+
+export interface NameValue {
+  name: string;
+  value: number;
+  online?: number;
+}
+
+export interface Distribution {
+  alert_levels: NameValue[];
+  event_types: NameValue[];
+  device_types: NameValue[];
+  vendors: NameValue[];
+  top_servers: { id: number; name: string; cpu?: number; memory?: number; disk?: number; site_name?: string }[];
+  top_devices: { id: number; name: string; ip: string; cpu?: number; memory?: number; site_name?: string }[];
+}
+
+export interface Me {
+  id: number;
+  username: string;
+  nickname: string;
+  role: 'admin' | 'operator' | 'viewer';
+  data_scope: 'all' | 'sites';
+  scope_sites: { id: number; name: string; site_type: SiteType }[];
+  scope_site_count: number | null;
+  system_activated: boolean;
+}
+
+export interface SystemState {
+  activated: boolean;
+  activated_at?: string | null;
+  activated_by?: string | null;
+  note?: string | null;
+  audit_log_count?: number;
 }
 
 // 告警趋势

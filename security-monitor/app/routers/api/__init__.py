@@ -17,10 +17,11 @@ from . import (
     servers,
     settings,
     sites,
+    system,
     users,
 )
 
 router = APIRouter()
 for _module in (auth, dashboard, sites, servers, network_devices, alerts, feishu, users, audit_logs, settings,
-                ai, log_analysis):
+                ai, log_analysis, system):
     router.include_router(_module.router)

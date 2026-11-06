@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Card, Form, InputNumber, Button, Space, message, Alert, Divider } from 'antd';
 import { SaveOutlined, ReloadOutlined } from '@ant-design/icons';
 import { settingsApi } from '../services/api';
+import SystemActivation from '../components/SystemActivation';
 
 export default function SystemSettings() {
   const [form] = Form.useForm();
@@ -104,6 +105,9 @@ export default function SystemSettings() {
           </Form.Item>
         </Form>
       </Card>
+      <div style={{ marginTop: 24 }}>
+        <SystemActivation />
+      </div>
     </div>
   );
 }
