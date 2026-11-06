@@ -1,0 +1,16 @@
+请按下面步骤操作（无需改配置）：
+
+1. 解压本文件夹
+2. 在终端执行：
+   sudo bash install.sh
+3. 若提示输入密码，输入当前用户密码后回车（即授权）
+
+安装成功后，回到管理端「服务器管理」刷新，应显示 Agent=在线。
+
+查看状态：
+  systemctl status security-monitor-agent
+
+卸载：
+  sudo systemctl disable --now security-monitor-agent
+  sudo rm -rf /opt/security-monitor-agent
+  sudo rm -f /etc/systemd/system/security-monitor-agent.service

@@ -1,0 +1,106 @@
+# ============================================
+# 多源异构安全监控与告警系统 - Docker 编排文件
+# ============================================
+
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: security-monitor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-security_monitor}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+    # 不对宿主机暴露端口，仅供容器网络内的 app 访问；如需本机调试可临时改为 "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: security-monitor-redis
+    restart: unless-stopped
+    # 不对宿主机暴露端口（Redis 未设密码）
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 后端应用
+  app:
+    build: .
+    container_name: security-monitor-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # 数据库配置
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-security_monitor}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+      # Redis 配置
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # 飞书配置
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL}
+      FEISHU_SECRET: ${FEISHU_SECRET}
+      # 应用配置
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # 安全配置（JWT_SECRET 必填，未设置时后端拒绝启动）
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 中设置 JWT_SECRET}
+      # 凭据加密密钥（必填，设置后不要更换，否则已保存的 SSH 密码/团体字无法解密）
+      CREDENTIAL_KEY: ${CREDENTIAL_KEY:?请在 .env 中设置 CREDENTIAL_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-180}
+      ALERT_RETENTION_DAYS: ${ALERT_RETENTION_DAYS:-365}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 让容器能通过 host.docker.internal 访问宿主机上的服务（如本地 Ollama 大模型）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./logs:/app/logs
+      - ./agent:/app/agent
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 前端 Web 服务
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: security-monitor-web
+    restart: unless-stopped
+    ports:
+      - "3000:80"  # 避开本机 Apache(httpd) 占用的 80 端口
+    depends_on:
+      - app
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

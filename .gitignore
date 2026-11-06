@@ -1,0 +1,26 @@
+# 密钥 / 本地配置（勿提交）
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 前端
+node_modules/
+dist/
+
+# 运行时
+security-monitor/logs/
+*.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
